@@ -103,18 +103,45 @@ Parametres supportes pour compatibilite SODA :
 - `$offset` : offset de pagination
 - `$where` : accepte mais ignore, car la partition est deja preparee
 
-## Demarrage Rapide
+## Prerequis et Lancement Pas a Pas
 
 Prerequis :
 
+- Git 2.40 ou superieur
 - Docker Desktop avec moteur Linux
 - Docker Compose v2 (`docker compose`)
+- Au moins 8 Go de RAM alloues a Docker Desktop et 10 Go d'espace disque libre
 
-Depuis la racine du projet :
+1. Cloner le repository et ouvrir le dossier du projet :
+
+```powershell
+git clone https://github.com/KhalidElKassimi/chicago-taxi-data-pipeline.git
+cd chicago-taxi-data-pipeline
+```
+
+2. Optionnel : definir des credentials locaux differents des valeurs par defaut :
+
+```powershell
+Copy-Item .env.example .env
+```
+
+3. Construire les images locales et demarrer tous les services :
 
 ```powershell
 docker compose up -d
 ```
+
+Au premier lancement, la construction de l'image Airflow telecharge PySpark (environ 317 Mo) et peut prendre plusieurs minutes selon la connexion Internet. L'absence temporaire de nouveaux logs pendant ce telechargement ne signifie pas que le build est bloque.
+
+4. Attendre que les services soient demarres puis verifier leur etat :
+
+```powershell
+docker compose ps
+```
+
+5. Ouvrir Airflow a <http://localhost:8080>, se connecter, puis declencher manuellement le DAG `pipeline_chicago_taxi`.
+
+6. Consulter les resultats dans MinIO ou ClickHouse lorsque le DAG est termine.
 
 Services accessibles apres demarrage :
 
@@ -590,16 +617,19 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 Le fichier `.env` ne doit pas etre commite.
 
-## Notes de Conception
+## Choix Techniques et Arbitrages
 
-- Le framework privilegie des transformations PySpark generiques pilotees par YAML.
-- Le mock API embarque la partition JSONL dans son image Docker pour rendre le projet portable.
-- ClickHouse utilise des tables externes S3 pour faire un vrai mirroring du datalake.
-- Gold est recalculee en overwrite depuis Silver FUNC afin de garder un modele analytique coherent en Parquet simple.
-- RAW, TECH et REJECT sont append-only par batch.
+- **Airflow + YAML** : un fichier YAML produit un DAG et reutilise les memes jobs Spark. Cela privilegie la standardisation et l'ajout rapide de nouveaux sujets plutot que des DAGs sur mesure.
+- **Spark standalone local** : un cluster Spark Docker isole les transformations du conteneur Airflow. C'est plus proche d'une architecture de production qu'un traitement Python embarque, au prix de ressources locales plus importantes.
+- **MinIO** : son API S3 permet une organisation Bronze/Silver/Gold locale, portable et compatible avec les patterns cloud, sans dependance a un compte cloud.
+- **Mock API avec donnees reelles** : le mock sert une partition SODA versionnee dans le repository. Ce choix rend le test reproductible quand l'API publique est lente ou indisponible ; en contrepartie, le volume et la fraicheur des donnees sont limites.
+- **RAW, TECH et REJECT append-only** : chaque batch est tracable et rejouable. FUNC utilise un snapshot deduplique pour fournir une vue metier courante plus simple a consommer.
+- **Gold en overwrite depuis FUNC** : ce choix maintient un modele analytique coherent et simple pour ce test technique. Une approche incrementale serait preferable sur de gros volumes.
+- **ClickHouse `ENGINE = S3`** : ClickHouse lit directement les fichiers Parquet MinIO, sans dupliquer les donnees. Cela offre un vrai mirroring mais les performances dependent de l'acces objet et ne beneficient pas d'index ClickHouse locaux.
 
-## Perspectives
+## Ce Que Je Ferais Avec Plus de Temps
 
+- Mettre en place une CI/CD GitHub Actions. Exemple simple : a chaque pull request, executer `docker compose config --quiet`, construire les images et lancer les tests unitaires ; apres merge sur `main`, publier les images versionnees dans un registry puis deployer la configuration vers l'environnement cible.
 - Ajouter le support multi-source dans le YAML, par exemple plusieurs API, fichiers ou tables pour un meme sujet fonctionnel.
 - Gerer le multi-source dans Silver avec une sous-couche RAW par source, puis une consolidation TECH/FUNC commune.
 - Ajouter une logique de soft delete dans Gold avec des champs comme `is_deleted`, `deleted_at` et `delete_reason` pour conserver l'historique analytique sans supprimer physiquement les lignes.
