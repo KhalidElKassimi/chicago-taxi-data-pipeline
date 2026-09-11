@@ -1,6 +1,8 @@
 logs/
 plugins/
-data/
+data/*
+!data/raw/
+!data/raw/chicago_taxi.jsonl
 __pycache__/
 *.pyc
 .env

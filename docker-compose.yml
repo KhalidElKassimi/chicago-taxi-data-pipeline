@@ -26,23 +26,35 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
+      PYTHONPATH: /opt/airflow
       AIRFLOW_CONN_SPARK_DEFAULT: spark://spark%3A%2F%2Fspark-master%3A7077
       PYSPARK_PYTHON: python3
       PYSPARK_DRIVER_PYTHON: python3
       MINIO_ENDPOINT: minio:9000
+      MINIO_S3A_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_HTTP_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_S3_ENDPOINT: http://minio:9000
     volumes: &airflow-volumes
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
       - ./data:/opt/airflow/data
+      - ./framework:/opt/airflow/framework
+      - ./config:/opt/airflow/config
     command: >-
       bash -c "airflow db migrate &&
-      (airflow users create --username admin --password admin
+      (airflow users create --username $$AIRFLOW_ADMIN_USER --password $$AIRFLOW_ADMIN_PASSWORD
       --firstname Local --lastname Admin --role Admin
-      --email admin@example.com || true)"
+      --email $$AIRFLOW_ADMIN_EMAIL || true)"
 
   airflow-webserver:
     build:
@@ -72,6 +84,10 @@ services:
       airflow-init:
         condition: service_completed_successfully
       minio:
+        condition: service_healthy
+      mock-api:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
     environment: *airflow-environment
     volumes: *airflow-volumes
@@ -130,10 +146,23 @@ services:
       /bin/sh -c "mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
       mc mb --ignore-existing local/datalake"
 
+  mock-api:
+    build:
+      context: .
+      dockerfile: docker/mock-api/Dockerfile
+    ports:
+      - "8090:8000"
+    environment:
+      MOCK_DATA_FILE: /data/raw/chicago_taxi.jsonl
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
     ports:
@@ -147,78 +176,7 @@ services:
       timeout: 5s
       retries: 20
 
-  superset-db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: ${SUPERSET_DB_USER:-superset}
-      POSTGRES_PASSWORD: ${SUPERSET_DB_PASSWORD:-superset}
-      POSTGRES_DB: ${SUPERSET_DB_NAME:-superset}
-    volumes:
-      - superset_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U superset -d superset"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-
-  superset-init:
-    build:
-      context: .
-      dockerfile: docker/superset/Dockerfile
-    depends_on:
-      superset-db:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    environment: &superset-environment
-      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
-      SUPERSET_DATABASE_URI: postgresql+psycopg2://${SUPERSET_DB_USER:-superset}:${SUPERSET_DB_PASSWORD:-superset}@superset-db:5432/${SUPERSET_DB_NAME:-superset}
-      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-local-development-secret}
-    volumes: &superset-volumes
-      - ./docker/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
-    command: >-
-      sh -c "superset db upgrade &&
-      (superset fab create-admin --username ${SUPERSET_ADMIN_USER:-admin} --firstname Local
-      --lastname Admin --email ${SUPERSET_ADMIN_EMAIL:-admin@example.com} --password ${SUPERSET_ADMIN_PASSWORD:-admin} || true) &&
-      superset init"
-
-  superset:
-    build:
-      context: .
-      dockerfile: docker/superset/Dockerfile
-    depends_on:
-      superset-init:
-        condition: service_completed_successfully
-    environment: *superset-environment
-    volumes: *superset-volumes
-    ports:
-      - "8088:8088"
-    command: superset run -h 0.0.0.0 -p 8088
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8088/health"]
-      interval: 10s
-      timeout: 10s
-      retries: 12
-
-  superset-datasource-init:
-    build:
-      context: .
-      dockerfile: docker/superset/Dockerfile
-    depends_on:
-      superset:
-        condition: service_healthy
-    environment:
-      SUPERSET_URL: http://superset:8088
-      SUPERSET_USERNAME: ${SUPERSET_ADMIN_USER:-admin}
-      SUPERSET_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
-      CLICKHOUSE_DATABASE_NAME: ClickHouse Analytics
-      CLICKHOUSE_SQLALCHEMY_URI: clickhousedb://${CLICKHOUSE_USER:-default}:${CLICKHOUSE_PASSWORD:-clickhouse}@clickhouse:8123/${CLICKHOUSE_DB:-analytics}
-    volumes:
-      - ./docker/superset/bootstrap_clickhouse.py:/app/bootstrap_clickhouse.py:ro
-    command: python /app/bootstrap_clickhouse.py
-
 volumes:
   postgres_data:
   minio_data:
   clickhouse_data:
-  superset_db_data:

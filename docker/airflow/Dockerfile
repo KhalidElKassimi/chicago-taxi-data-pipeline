@@ -21,8 +21,12 @@ RUN mkdir -p /opt/spark-jars \
 USER airflow
 RUN pip install --no-cache-dir \
     --constraint "${CONSTRAINTS_URL}" \
-    apache-airflow-providers-apache-spark==4.11.0 \
-    pyspark==3.5.4 \
-    minio==7.2.10
+    apache-airflow-providers-apache-spark==4.11.0
+
+RUN pip install --no-cache-dir \
+    pyspark==3.5.3 \
+    minio==7.2.10 \
+    pyarrow==17.0.0 \
+    pyyaml==6.0.2
 
 ENV PATH="/home/airflow/.local/bin:${PATH}"

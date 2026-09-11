@@ -1,0 +1,379 @@
+pipeline:
+  name: chicago_taxi
+
+source:
+  type: api
+  provider: soda
+  endpoint: http://mock-api:8000/resource/wrvz-psew.json
+  filter:
+    column: trip_start_timestamp
+    start: "2023-01-01T00:00:00"
+    end: "2023-03-31T23:59:59"
+  pagination:
+    page_size: 1000
+    max_rows: 1000
+    request_timeout_seconds: 180
+    max_retries: 5
+
+bronze:
+  bucket: datalake
+  prefix: chicago_taxi/bronze
+  format: jsonl
+
+monitoring:
+  bucket: datalake
+  prefix: chicago_taxi/monitoring
+  format: parquet
+
+silver:
+  raw:
+    table_name: RAW_CHICAGO_TAXI
+    source_table: bronze
+    bucket: datalake
+    prefix: chicago_taxi/silver/raw
+    format: parquet
+    columns:
+      - name: trip_id
+        type: string
+      - name: taxi_id
+        type: string
+      - name: trip_start_timestamp
+        type: string
+      - name: trip_end_timestamp
+        type: string
+      - name: trip_seconds
+        type: string
+      - name: trip_miles
+        type: string
+      - name: pickup_census_tract
+        type: string
+      - name: dropoff_census_tract
+        type: string
+      - name: pickup_community_area
+        type: string
+      - name: dropoff_community_area
+        type: string
+      - name: fare
+        type: string
+      - name: tips
+        type: string
+      - name: tolls
+        type: string
+      - name: extras
+        type: string
+      - name: trip_total
+        type: string
+      - name: payment_type
+        type: string
+      - name: company
+        type: string
+      - name: pickup_centroid_latitude
+        type: string
+      - name: pickup_centroid_longitude
+        type: string
+      - name: pickup_centroid_location
+        type: string
+      - name: dropoff_centroid_latitude
+        type: string
+      - name: dropoff_centroid_longitude
+        type: string
+      - name: dropoff_centroid_location
+        type: string
+
+  tech:
+    table_name: TECH_CHICAGO_TAXI
+    source_table: RAW_CHICAGO_TAXI
+    bucket: datalake
+    prefix: chicago_taxi/silver/tech
+    columns:
+      - name: trip_id
+        type: string
+        check_nullability: true
+        is_critical: true
+      - name: trip_start_timestamp
+        type: timestamp
+        check_nullability: true
+        is_critical: true
+      - name: trip_end_timestamp
+        type: timestamp
+        check_nullability: true
+        is_critical: true
+      - name: trip_seconds
+        type: double
+        check_range:
+          min: 0
+          max: 86400
+      - name: trip_miles
+        type: double
+        check_range:
+          min: 0
+          max: 200
+      - name: pickup_community_area
+        type: integer
+        check_range:
+          min: 1
+          max: 77
+      - name: dropoff_community_area
+        type: integer
+        check_range:
+          min: 1
+          max: 77
+      - name: fare
+        type: double
+        fill_nulls: 0.0
+        check_range:
+          min: 0
+      - name: tips
+        type: double
+        fill_nulls: 0.0
+        check_range:
+          min: 0
+      - name: tolls
+        type: double
+        fill_nulls: 0.0
+        check_range:
+          min: 0
+      - name: extras
+        type: double
+        fill_nulls: 0.0
+        check_range:
+          min: 0
+      - name: trip_total
+        type: double
+        fill_nulls: 0.0
+        check_range:
+          min: 0
+      - name: payment_type
+        type: string
+        accepted_values:
+          - Cash
+          - Credit Card
+          - Mobile
+          - Prcard
+          - Unknown
+      - name: pickup_centroid_latitude
+        type: double
+        check_range:
+          min: -90
+          max: 90
+      - name: pickup_centroid_longitude
+        type: double
+        check_range:
+          min: -180
+          max: 180
+      - name: dropoff_centroid_latitude
+        type: double
+        check_range:
+          min: -90
+          max: 90
+      - name: dropoff_centroid_longitude
+        type: double
+        check_range:
+          min: -180
+          max: 180
+
+  func:
+    table_name: FUNC_CHICAGO_TAXI_TRIPS
+    source_table: TECH_CHICAGO_TAXI
+    bucket: datalake
+    prefix: chicago_taxi/silver/func
+    output_partitions: 1
+    columns:
+      - source: trip_id
+        name: trip_key
+      - source: taxi_id
+        name: taxi_key
+      - source: trip_start_timestamp
+        name: trip_started_at
+      - source: trip_end_timestamp
+        name: trip_ended_at
+      - source: trip_seconds
+        name: duration_seconds
+      - source: trip_miles
+        name: distance_miles
+      - name: pickup_census_tract
+      - name: dropoff_census_tract
+      - name: pickup_community_area
+      - name: dropoff_community_area
+      - name: fare
+      - name: tips
+      - name: tolls
+      - name: extras
+      - source: trip_total
+        name: total_amount
+      - name: payment_type
+      - name: company
+      - name: pickup_centroid_latitude
+      - name: pickup_centroid_longitude
+      - name: pickup_centroid_location
+      - name: dropoff_centroid_latitude
+      - name: dropoff_centroid_longitude
+      - name: dropoff_centroid_location
+      - name: _source_file
+      - name: _raw_loaded_at
+    transformations:
+      - type: expression
+        name: trip_date
+        expression: to_date(trip_started_at)
+      - type: expression
+        name: trip_hour
+        expression: hour(trip_started_at)
+      - type: expression
+        name: fare_per_mile
+        expression: case when distance_miles > 0 then fare / distance_miles else null end
+    enrichments:
+      - type: aggregate
+        name: company_metrics
+        group_by:
+          - company
+        metrics:
+          - name: company_trip_count
+            function: count
+            column: trip_key
+          - name: company_avg_total_amount
+            function: avg
+            column: total_amount
+    deduplication:
+      strategy: snapshot
+      keys:
+        - trip_key
+      order_by:
+        - trip_started_at
+
+gold:
+  bucket: datalake
+  prefix: chicago_taxi/gold
+  output_partitions: 1
+  dimensions:
+    - name: dim_company
+      path: dimensions/dim_company
+      business_key:
+        - company
+      surrogate_key: company_key
+      columns:
+        - name: company
+        - name: trip_started_at
+      scd:
+        type: 2
+        valid_from: trip_started_at
+        tracked_columns:
+          - company
+
+    - name: dim_taxi
+      path: dimensions/dim_taxi
+      business_key:
+        - taxi_key
+      surrogate_key: taxi_sk
+      columns:
+        - name: taxi_key
+        - name: trip_started_at
+      scd:
+        type: 2
+        valid_from: trip_started_at
+        tracked_columns:
+          - taxi_key
+
+    - name: dim_payment_type
+      path: dimensions/dim_payment_type
+      business_key:
+        - payment_type
+      surrogate_key: payment_type_key
+      columns:
+        - name: payment_type
+      scd:
+        type: 1
+
+    - name: dim_community_area
+      path: dimensions/dim_community_area
+      business_key:
+        - community_area_id
+      surrogate_key: community_area_key
+      source_columns:
+        - pickup_community_area
+        - dropoff_community_area
+      columns:
+        - name: community_area_id
+      scd:
+        type: 1
+
+    - name: dim_date
+      path: dimensions/dim_date
+      business_key:
+        - date_key
+      surrogate_key: date_sk
+      columns:
+        - name: date_key
+          expression: date_format(trip_started_at, 'yyyyMMdd')
+        - name: trip_date
+        - name: year
+          expression: year(trip_started_at)
+        - name: month
+          expression: month(trip_started_at)
+        - name: day
+          expression: dayofmonth(trip_started_at)
+      scd:
+        type: 1
+
+  facts:
+    - name: fact_taxi_trip
+      path: facts/fact_taxi_trip
+      grain:
+        - trip_key
+      columns:
+        - name: trip_key
+        - name: taxi_key
+        - name: company
+        - name: payment_type
+        - name: pickup_community_area
+        - name: dropoff_community_area
+        - name: trip_started_at
+        - name: trip_ended_at
+        - name: date_key
+          expression: date_format(trip_started_at, 'yyyyMMdd')
+        - name: duration_seconds
+        - name: distance_miles
+        - name: fare
+        - name: tips
+        - name: tolls
+        - name: extras
+        - name: total_amount
+        - name: fare_per_mile
+      joins:
+        - dimension: dim_company
+          source_key:
+            - company
+          target_key:
+            - company
+          output_key: company_key
+          effective_at: trip_started_at
+        - dimension: dim_taxi
+          source_key:
+            - taxi_key
+          target_key:
+            - taxi_key
+          output_key: taxi_sk
+          effective_at: trip_started_at
+        - dimension: dim_payment_type
+          source_key:
+            - payment_type
+          target_key:
+            - payment_type
+          output_key: payment_type_key
+        - dimension: dim_community_area
+          source_key:
+            - pickup_community_area
+          target_key:
+            - community_area_id
+          output_key: pickup_community_area_key
+        - dimension: dim_community_area
+          source_key:
+            - dropoff_community_area
+          target_key:
+            - community_area_id
+          output_key: dropoff_community_area_key
+        - dimension: dim_date
+          source_key:
+            - date_key
+          target_key:
+            - date_key
+          output_key: date_sk
